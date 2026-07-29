@@ -76,8 +76,9 @@ The only thing computed once is the underlying dataset build (see
 
 Compression is handled by **`server.compression`** (`application.yml`) — Reactor Netty's
 built-in response compression, not application code. It negotiates `Accept-Encoding` and
-compresses eligible responses (`application/json`, `application/x-protobuf`, above
-`min-response-size`) fresh on every request.
+compresses the `application/json` response (above `min-response-size`) fresh on every
+request. `application/x-protobuf` is deliberately excluded — it's already-dense binary
+(packed IEEE-754 doubles), so gzip buys little there while still costing CPU.
 
 ## Dependency on `test-data-protos`
 
