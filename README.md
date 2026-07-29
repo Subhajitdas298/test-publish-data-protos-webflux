@@ -124,106 +124,58 @@ same pattern as `test-publish-data-protos`.
 This app is deployed as its **own Container App**, `data-protos-webflux`, sitting
 alongside (not replacing) the existing `data-protos` app, in the **same** resource group,
 Container Apps environment, and Container Registry — so no new billable environment or
-registry is created, only a second (still scale-to-zero) app.
+registry was created, only a second (still scale-to-zero) app.
 
-### Azure resources to create once
+### Provisioned resources
 
-Run these once, from a machine/session with `az` installed and logged in to the same
-subscription and resource group as `test-publish-data-protos`. Nothing here has been
-provisioned yet from this session — it had no `az` CLI or Azure credentials available, so
-these commands need to be run by someone with access, the same way the original
-`data-protos` app's resources were set up.
+The Azure resources below already exist in subscription `cfb23074-9c21-4bc5-aecb-4845d97a147e`
+("Azure subscription 1"), resource group **`data-protos`** (region `eastus`) — reusing the
+same environment and registry as `test-publish-data-protos` to avoid provisioning a second
+billable environment/registry:
 
-```bash
-SUBSCRIPTION_ID=<your-subscription-id>          # cfb23074-9c21-4bc5-aecb-4845d97a147e for the existing setup
-RESOURCE_GROUP=data-protos                      # reuse the existing resource group
-LOCATION=eastus
-ACR_NAME=dataprotosacr2477                      # reuse the existing registry
-ENVIRONMENT_NAME=cae-data-protos                # reuse the existing Container Apps environment
-APP_NAME=data-protos-webflux                    # new, separate container app
+| Resource                       | Name                                                                                          |
+|----------------------------------|------------------------------------------------------------------------------------------------|
+| Resource group                  | `data-protos` (shared)                                                                        |
+| Container Registry (Basic)      | `dataprotosacr2477` (`dataprotosacr2477.azurecr.io`) (shared)                                 |
+| Container Apps environment      | `cae-data-protos` (shared)                                                                    |
+| Container App (min-replicas 0)  | `data-protos-webflux` — `https://data-protos-webflux.gentlepond-37bc0af9.eastus.azurecontainerapps.io` |
+| AD app registration (OIDC)      | `gh-actions-data-protos-webflux` (client ID `965b7fda-de7f-44d7-b5be-d9bd054472e1`)            |
 
-az account set --subscription "$SUBSCRIPTION_ID"
-
-# Placeholder container app — the workflow only ever updates its image afterwards.
-# min-replicas 0 (scale-to-zero) keeps this within the Container Apps Consumption
-# free monthly grant: the app costs nothing while idle and cold-starts on the next request.
-az containerapp create \
-  --name "$APP_NAME" \
-  --resource-group "$RESOURCE_GROUP" \
-  --environment "$ENVIRONMENT_NAME" \
-  --image mcr.microsoft.com/k8se/quickstart:latest \
-  --target-port 8080 \
-  --ingress external \
-  --min-replicas 0 --max-replicas 1
-
-# Let the app pull from the shared ACR using its own managed identity
-az containerapp identity assign --name "$APP_NAME" --resource-group "$RESOURCE_GROUP" --system-assigned
-PRINCIPAL_ID=$(az containerapp identity show --name "$APP_NAME" --resource-group "$RESOURCE_GROUP" --query principalId -o tsv)
-ACR_ID=$(az acr show --name "$ACR_NAME" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
-az role assignment create --assignee "$PRINCIPAL_ID" --role AcrPull --scope "$ACR_ID"
-az containerapp registry set --name "$APP_NAME" --resource-group "$RESOURCE_GROUP" --server "$ACR_NAME.azurecr.io" --identity system
-```
-
-### Azure AD app registration for GitHub OIDC
-
-This repo needs its **own** app registration and federated credential — OIDC federated
-credentials are scoped to a specific `repo:<owner>/<repo>:ref:<ref>` subject, so the
-existing `gh-actions-data-protos` registration used by `test-publish-data-protos` cannot
-be reused as-is.
-
-```bash
-APP_ID=$(az ad app create --display-name "gh-actions-data-protos-webflux" --query appId -o tsv)
-az ad sp create --id "$APP_ID"
-
-az ad app federated-credential create --id "$APP_ID" --parameters '{
-  "name": "github-main-branch",
-  "issuer": "https://token.actions.githubusercontent.com",
-  "subject": "repo:Subhajitdas298/test-publish-data-protos-webflux:ref:refs/heads/main",
-  "audiences": ["api://AzureADTokenExchange"]
-}'
-```
-
-> **Note:** if this GitHub org/repo has the "use unique repository/owner ID in the
-> subject claim" OIDC setting enabled (as `test-publish-data-protos` does), the actual
-> subject GitHub sends is `repo:<owner>@<owner_id>/<repo>@<repo_id>:ref:refs/heads/main`
-> instead of the plain name form above — check the workflow's `azure/login` step for an
-> `AADSTS700213` error to find the exact subject it presented, then update the federated
-> credential to match.
-
-```bash
-# Let the CI identity push images to the shared ACR and update this container app only
-az role assignment create --assignee "$APP_ID" --role AcrPush --scope "$ACR_ID"
-CONTAINERAPP_ID=$(az containerapp show --name "$APP_NAME" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
-az role assignment create --assignee "$APP_ID" --role "Container Apps Contributor" --scope "$CONTAINERAPP_ID"
-
-TENANT_ID=$(az account show --query tenantId -o tsv)
-echo "AZURE_CLIENT_ID=$APP_ID"
-echo "AZURE_TENANT_ID=$TENANT_ID"
-echo "AZURE_SUBSCRIPTION_ID=$SUBSCRIPTION_ID"
-```
+The AD app has two federated credentials scoped to this repo's `main` branch — one using
+the plain `repo:Subhajitdas298/test-publish-data-protos-webflux:ref:refs/heads/main`
+subject and one using the immutable-ID form
+`repo:Subhajitdas298@20024190/test-publish-data-protos-webflux@1316021005:ref:refs/heads/main`
+(this account has GitHub's immutable-ID OIDC subject format enabled, same as
+`test-publish-data-protos`) — so `azure/login` works regardless of which subject format
+GitHub actually presents. It also has `AcrPush` on the shared registry and
+`Container Apps Contributor` scoped to just the `data-protos-webflux` app (not the whole
+resource group). The container app's own system-assigned identity has `AcrPull` on the
+registry so it can pull images.
 
 ### GitHub repo configuration
 
-**Settings → Secrets and variables → Actions → Secrets:**
+The Azure side is fully provisioned. What's left is adding these in this repo's
+**Settings → Secrets and variables → Actions** — GitHub Actions secrets require
+client-side encryption with the repo's public key to set, which isn't available through
+any tool in this session, so this last step needs to be done by hand in the GitHub UI:
+
+**Secrets:**
 
 | Secret                 | Value                                              |
 |-------------------------|-----------------------------------------------------|
-| `AZURE_CLIENT_ID`       | the new `$APP_ID` printed above                    |
-| `AZURE_TENANT_ID`       | `86c9c0f2-9014-48a2-99e7-785b23ee2769` (same tenant as `data-protos`) |
-| `AZURE_SUBSCRIPTION_ID` | `cfb23074-9c21-4bc5-aecb-4845d97a147e` (same subscription as `data-protos`) |
+| `AZURE_CLIENT_ID`       | `965b7fda-de7f-44d7-b5be-d9bd054472e1`              |
+| `AZURE_TENANT_ID`       | `86c9c0f2-9014-48a2-99e7-785b23ee2769`              |
+| `AZURE_SUBSCRIPTION_ID` | `cfb23074-9c21-4bc5-aecb-4845d97a147e`              |
 | `PACKAGES_READ_TOKEN`   | a GitHub PAT with `read:packages`, so the workflow can resolve `test-data-protos` from GitHub Packages |
 
-**Settings → Secrets and variables → Actions → Variables:**
+**Variables:**
 
 | Variable                        | Value                                  |
 |-----------------------------------|-------------------------------------------|
-| `AZURE_CONTAINER_REGISTRY_NAME` | `dataprotosacr2477` (shared with `data-protos`) |
-| `AZURE_RESOURCE_GROUP`          | `data-protos` (shared with `data-protos`) |
+| `AZURE_CONTAINER_REGISTRY_NAME` | `dataprotosacr2477`                      |
+| `AZURE_RESOURCE_GROUP`          | `data-protos`                            |
 | `AZURE_CONTAINER_APP_NAME`      | `data-protos-webflux`                    |
 
-These can't be set via the GitHub tools available to this session (setting an Actions
-secret requires client-side encryption with the repo's public key, and provisioning the
-Azure resources above requires an authenticated `az` CLI, neither of which this session
-has), so add them yourself in the GitHub UI after running the `az` commands above. Once
-set, any push to `main` (including a merged PR) triggers the workflow and deploys this
-app to its own URL alongside the existing `data-protos` app.
+Once those are set, any push to `main` (including a merged PR) triggers
+[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) and deploys this app to its
+own URL alongside the existing `data-protos` app.
