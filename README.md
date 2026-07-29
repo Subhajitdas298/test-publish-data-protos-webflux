@@ -16,7 +16,10 @@ array bundled as a resource (`src/main/resources/data/dataset.bin`), and every l
 (repository + both services) publishes a `Mono` built with Reactor's `.cache()` operator,
 so the file is only read and the protobuf message only built once — on the first
 subscription from either endpoint — and every subsequent request (and every concurrent
-in-flight request) replays that cached signal instead of recomputing it.
+in-flight request) replays that cached signal instead of recomputing it. That same
+compute-once/cache-forever approach extends to the gzip-compressed bytes and the ETag of
+each representation (see [Performance](#performance)), so nothing on the request path ever
+recompresses, rehashes, or reserializes.
 
 ## Architecture
 
@@ -26,13 +29,16 @@ in-flight request) replays that cached signal instead of recomputing it.
   construction is wrapped in `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())`
   so it never runs on a Netty event-loop thread, and the resulting `Mono<Root>` is built
   with `.cache()` so it is only ever computed once.
-- **`ProtoDataService`** — maps the repository's `Mono<Root>` to the serialized protobuf
-  bytes (`Mono<byte[]>`), itself cached.
-- **`JsonDataService`** — maps the repository's `Mono<Root>` to its JSON representation
-  (`Mono<String>`), itself cached.
-- **`DataController`** — exposes both services on a single URL as reactive endpoints
-  (`Mono<byte[]>` / `Mono<String>`), differentiated purely by the `Accept` header (HTTP
-  content negotiation). Nothing in the request path blocks.
+- **`ProtoDataService`** / **`JsonDataService`** — each maps the repository's `Mono<Root>`
+  to its representation's bytes (raw protobuf, or UTF-8 JSON via `JsonFormat`), and from
+  those bytes derives a gzip-compressed `Mono<byte[]>` and a SHA-256 `Mono<String>` ETag —
+  all three cached independently, so each is computed exactly once regardless of how many
+  requests arrive concurrently.
+- **`DataController`** — exposes both services on a single URL, differentiated purely by
+  the `Accept` header (HTTP content negotiation). For each request it only picks plain vs.
+  gzip based on `Accept-Encoding` and checks `If-None-Match` against the cached ETag
+  (returning `304 Not Modified` with no body on a match) — it never serializes, compresses,
+  or hashes anything itself. Nothing in the request path blocks.
 
 ## Data shape
 
@@ -56,7 +62,31 @@ There is a single endpoint. The representation is chosen purely by the `Accept` 
 | GET    | `/api/data` | `application/x-protobuf` | Raw protobuf binary — serialized bytes of the `Root` message. Decode with `Root.parseFrom(bytes)`. |
 | GET    | `/api/data` | `application/json`       | The same dataset as JSON, using protobuf's standard JSON mapping (via `JsonFormat`). |
 
-No authentication, no request parameters.
+No authentication, no request parameters. See [Performance](#performance) for the
+response headers (`Content-Encoding`, `ETag`, `Cache-Control`) both variants set.
+
+## Performance
+
+Since the dataset is static for the lifetime of the process, every expensive step is done
+at most once and cached (see [Architecture](#architecture)) — the request path only ever
+picks between already-computed byte arrays:
+
+- **Gzip, precomputed** — each representation's gzip-compressed bytes are computed once
+  and cached alongside the plain bytes, rather than compressing on every request (which is
+  what Spring Boot's built-in `server.compression.*` would do here, re-deflating the same
+  ~20–50&nbsp;MB payload on every single call). The controller serves the precomputed
+  compressed bytes with `Content-Encoding: gzip` whenever the request's `Accept-Encoding`
+  allows it, and the plain bytes otherwise — so compression costs nothing per request.
+- **Conditional GET (`ETag` / `If-None-Match`)** — a SHA-256 hash of each representation is
+  computed once and cached the same way. Every response carries that hash as a strong
+  `ETag`; a request with a matching `If-None-Match` gets back `304 Not Modified` with an
+  empty body instead of the full payload, which is the single biggest win for repeat
+  clients since it skips transferring the ~20–50&nbsp;MB body entirely.
+- **`Cache-Control: public, max-age=3600`** lets clients and any intermediate cache/CDN
+  skip the request altogether for an hour, falling back to the free conditional-GET
+  revalidation above once that expires.
+- **`Vary: Accept, Accept-Encoding`** so caches never conflate the protobuf/JSON
+  representations or the plain/gzip encodings of this single URL.
 
 ## Dependency on `test-data-protos`
 
