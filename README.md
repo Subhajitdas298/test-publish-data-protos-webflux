@@ -16,10 +16,13 @@ array bundled as a resource (`src/main/resources/data/dataset.bin`), and every l
 (repository + both services) publishes a `Mono` built with Reactor's `.cache()` operator,
 so the file is only read and the protobuf message only built once — on the first
 subscription from either endpoint — and every subsequent request (and every concurrent
-in-flight request) replays that cached signal instead of recomputing it. That same
-compute-once/cache-forever approach extends to the gzip-compressed bytes and the ETag of
-each representation (see [Performance](#performance)), so nothing on the request path ever
-recompresses, rehashes, or reserializes.
+in-flight request) replays that cached signal instead of recomputing it.
+
+That caching stops at the built dataset, deliberately. There is no HTTP-level caching —
+every response is `Cache-Control: no-store` and there's no `ETag`/conditional-GET support,
+so every request is always answered live, and gzip compression (see
+[Performance](#performance)) is done fresh per request rather than precomputed, so a
+network trace shows real work happening on every call.
 
 ## Architecture
 
@@ -28,17 +31,18 @@ recompresses, rehashes, or reserializes.
   builds the raw `Root` protobuf message from it. The blocking file read and message
   construction is wrapped in `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())`
   so it never runs on a Netty event-loop thread, and the resulting `Mono<Root>` is built
-  with `.cache()` so it is only ever computed once.
+  with `.cache()` so it is only ever computed once — this is the one thing kept cached,
+  since re-reading the file and rebuilding 2,600,000 values on every request would dwarf
+  any per-request cost.
 - **`ProtoDataService`** / **`JsonDataService`** — each maps the repository's `Mono<Root>`
-  to its representation's bytes (raw protobuf, or UTF-8 JSON via `JsonFormat`), and from
-  those bytes derives a gzip-compressed `Mono<byte[]>` and a SHA-256 `Mono<String>` ETag —
-  all three cached independently, so each is computed exactly once regardless of how many
-  requests arrive concurrently.
+  to its representation's bytes (raw protobuf, or UTF-8 JSON via `JsonFormat`), cached the
+  same way. Nothing downstream of this is cached.
 - **`DataController`** — exposes both services on a single URL, differentiated purely by
-  the `Accept` header (HTTP content negotiation). For each request it only picks plain vs.
-  gzip based on `Accept-Encoding` and checks `If-None-Match` against the cached ETag
-  (returning `304 Not Modified` with no body on a match) — it never serializes, compresses,
-  or hashes anything itself. Nothing in the request path blocks.
+  the `Accept` header (HTTP content negotiation). On every request it re-checks
+  `Accept-Encoding` and, if gzip is accepted, compresses the cached bytes fresh (offloaded
+  to `Schedulers.boundedElastic()` so the compression itself never blocks the Netty
+  event-loop thread) — nothing about the compressed response is stored or reused across
+  requests.
 
 ## Data shape
 
@@ -63,30 +67,23 @@ There is a single endpoint. The representation is chosen purely by the `Accept` 
 | GET    | `/api/data` | `application/json`       | The same dataset as JSON, using protobuf's standard JSON mapping (via `JsonFormat`). |
 
 No authentication, no request parameters. See [Performance](#performance) for the
-response headers (`Content-Encoding`, `ETag`, `Cache-Control`) both variants set.
+response headers (`Content-Encoding`, `Cache-Control`) both variants set.
 
 ## Performance
 
-Since the dataset is static for the lifetime of the process, every expensive step is done
-at most once and cached (see [Architecture](#architecture)) — the request path only ever
-picks between already-computed byte arrays:
+By design, no network-level caching: every request is answered live, always hitting the
+service. The only thing computed once is the underlying dataset build (see
+[Architecture](#architecture)) — reading the 20&nbsp;MB `dataset.bin` and building the
+`Root` message is far more expensive than anything below, so that alone stays cached.
 
-- **Gzip, precomputed** — each representation's gzip-compressed bytes are computed once
-  and cached alongside the plain bytes, rather than compressing on every request (which is
-  what Spring Boot's built-in `server.compression.*` would do here, re-deflating the same
-  ~20–50&nbsp;MB payload on every single call). The controller serves the precomputed
-  compressed bytes with `Content-Encoding: gzip` whenever the request's `Accept-Encoding`
-  allows it, and the plain bytes otherwise — so compression costs nothing per request.
-- **Conditional GET (`ETag` / `If-None-Match`)** — a SHA-256 hash of each representation is
-  computed once and cached the same way. Every response carries that hash as a strong
-  `ETag`; a request with a matching `If-None-Match` gets back `304 Not Modified` with an
-  empty body instead of the full payload, which is the single biggest win for repeat
-  clients since it skips transferring the ~20–50&nbsp;MB body entirely.
-- **`Cache-Control: public, max-age=3600`** lets clients and any intermediate cache/CDN
-  skip the request altogether for an hour, falling back to the free conditional-GET
-  revalidation above once that expires.
-- **`Vary: Accept, Accept-Encoding`** so caches never conflate the protobuf/JSON
-  representations or the plain/gzip encodings of this single URL.
+- **`Cache-Control: no-store`** on every response — no client, proxy, or CDN is allowed to
+  cache it, so there's no conditional-GET/ETag machinery either. Every call is a full
+  request/response.
+- **Gzip, computed per request** — if `Accept-Encoding` allows it, the controller
+  compresses the cached plain bytes fresh on every request (rather than precomputing and
+  reusing compressed bytes), offloaded to `Schedulers.boundedElastic()` so the compression
+  itself never blocks the Netty event-loop thread. This trades repeated CPU work for the
+  guarantee that nothing about the response is reused across requests.
 
 ## Dependency on `test-data-protos`
 
