@@ -21,8 +21,8 @@ in-flight request) replays that cached signal instead of recomputing it.
 That caching stops at the built dataset, deliberately. There is no HTTP-level caching —
 every response is `Cache-Control: no-store` and there's no `ETag`/conditional-GET support,
 so every request is always answered live, and gzip compression (see
-[Performance](#performance)) is done fresh per request rather than precomputed, so a
-network trace shows real work happening on every call.
+[Performance](#performance)) is applied fresh per request by the server itself rather than
+precomputed, so a network trace shows real work happening on every call.
 
 ## Architecture
 
@@ -38,11 +38,11 @@ network trace shows real work happening on every call.
   to its representation's bytes (raw protobuf, or UTF-8 JSON via `JsonFormat`), cached the
   same way. Nothing downstream of this is cached.
 - **`DataController`** — exposes both services on a single URL, differentiated purely by
-  the `Accept` header (HTTP content negotiation). On every request it re-checks
-  `Accept-Encoding` and, if gzip is accepted, compresses the cached bytes fresh (offloaded
-  to `Schedulers.boundedElastic()` so the compression itself never blocks the Netty
-  event-loop thread) — nothing about the compressed response is stored or reused across
-  requests.
+  the `Accept` header (HTTP content negotiation), and writes the cached bytes straight to
+  the response with `Cache-Control: no-store`. Gzip isn't handled here at all — it's
+  Reactor Netty's own compression support (`server.compression`, see
+  [Performance](#performance)) that negotiates `Accept-Encoding` and compresses the
+  outgoing bytes, per request, before they hit the wire.
 
 ## Data shape
 
@@ -79,11 +79,11 @@ service. The only thing computed once is the underlying dataset build (see
 - **`Cache-Control: no-store`** on every response — no client, proxy, or CDN is allowed to
   cache it, so there's no conditional-GET/ETag machinery either. Every call is a full
   request/response.
-- **Gzip, computed per request** — if `Accept-Encoding` allows it, the controller
-  compresses the cached plain bytes fresh on every request (rather than precomputing and
-  reusing compressed bytes), offloaded to `Schedulers.boundedElastic()` so the compression
-  itself never blocks the Netty event-loop thread. This trades repeated CPU work for the
-  guarantee that nothing about the response is reused across requests.
+- **Gzip, via `server.compression`** (`application.yml`) — Reactor Netty's built-in
+  response compression, not application code. It negotiates `Accept-Encoding` and
+  compresses eligible responses (`application/json`, `application/x-protobuf`, above
+  `min-response-size`) fresh on every request; nothing about the compressed bytes is
+  cached or reused across requests.
 
 ## Dependency on `test-data-protos`
 
