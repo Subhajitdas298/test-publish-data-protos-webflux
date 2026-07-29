@@ -18,6 +18,10 @@ so the file is only read and the protobuf message only built once — on the fir
 subscription from either endpoint — and every subsequent request (and every concurrent
 in-flight request) replays that cached signal instead of recomputing it.
 
+That caching stops at the built dataset, deliberately. Gzip compression (see
+[Performance](#performance)) is applied fresh per request by the server itself rather than
+precomputed, so a network trace shows real work happening on every call.
+
 ## Architecture
 
 - **`DataRepository`** (repository layer) — reads `data/dataset.bin` (2,600,000
@@ -25,14 +29,19 @@ in-flight request) replays that cached signal instead of recomputing it.
   builds the raw `Root` protobuf message from it. The blocking file read and message
   construction is wrapped in `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())`
   so it never runs on a Netty event-loop thread, and the resulting `Mono<Root>` is built
-  with `.cache()` so it is only ever computed once.
+  with `.cache()` so it is only ever computed once — this is the one thing kept cached,
+  since re-reading the file and rebuilding 2,600,000 values on every request would dwarf
+  any per-request cost.
 - **`ProtoDataService`** — maps the repository's `Mono<Root>` to the serialized protobuf
   bytes (`Mono<byte[]>`), itself cached.
 - **`JsonDataService`** — maps the repository's `Mono<Root>` to its JSON representation
   (`Mono<String>`), itself cached.
 - **`DataController`** — exposes both services on a single URL as reactive endpoints
   (`Mono<byte[]>` / `Mono<String>`), differentiated purely by the `Accept` header (HTTP
-  content negotiation). Nothing in the request path blocks.
+  content negotiation). It doesn't handle compression itself — that's Reactor Netty's own
+  compression support (`server.compression`, see [Performance](#performance)), which
+  negotiates `Accept-Encoding` and compresses the outgoing bytes per request, transparently
+  to the controller.
 
 ## Data shape
 
@@ -56,7 +65,19 @@ There is a single endpoint. The representation is chosen purely by the `Accept` 
 | GET    | `/api/data` | `application/x-protobuf` | Raw protobuf binary — serialized bytes of the `Root` message. Decode with `Root.parseFrom(bytes)`. |
 | GET    | `/api/data` | `application/json`       | The same dataset as JSON, using protobuf's standard JSON mapping (via `JsonFormat`). |
 
-No authentication, no request parameters.
+No authentication, no request parameters. See [Performance](#performance) for how
+`Content-Encoding` is negotiated.
+
+## Performance
+
+The only thing computed once is the underlying dataset build (see
+[Architecture](#architecture)) — reading the 20&nbsp;MB `dataset.bin` and building the
+`Root` message is far more expensive than anything below, so that alone stays cached.
+
+Compression is handled by **`server.compression`** (`application.yml`) — Reactor Netty's
+built-in response compression, not application code. It negotiates `Accept-Encoding` and
+compresses eligible responses (`application/json`, `application/x-protobuf`, above
+`min-response-size`) fresh on every request.
 
 ## Dependency on `test-data-protos`
 
