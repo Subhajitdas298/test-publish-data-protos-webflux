@@ -8,20 +8,19 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
 import java.io.UncheckedIOException;
-import java.nio.charset.StandardCharsets;
 
 @Service
 public class JsonDataService {
 
-    private final Mono<byte[]> jsonDataset;
+    private final Mono<String> jsonDataset;
 
     public JsonDataService(DataRepository dataRepository) {
         this.jsonDataset = dataRepository.findData()
-                .map(root -> toJson(root).getBytes(StandardCharsets.UTF_8))
+                .map(JsonDataService::toJson)
                 .cache();
     }
 
-    public Mono<byte[]> getData() {
+    public Mono<String> getData() {
         return jsonDataset;
     }
 

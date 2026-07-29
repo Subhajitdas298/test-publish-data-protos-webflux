@@ -32,15 +32,16 @@ precomputed, so a network trace shows real work happening on every call.
   with `.cache()` so it is only ever computed once — this is the one thing kept cached,
   since re-reading the file and rebuilding 2,600,000 values on every request would dwarf
   any per-request cost.
-- **`ProtoDataService`** / **`JsonDataService`** — each maps the repository's `Mono<Root>`
-  to its representation's bytes (raw protobuf, or UTF-8 JSON via `JsonFormat`), cached the
-  same way. Nothing downstream of this is cached.
-- **`DataController`** — exposes both services on a single URL, differentiated purely by
-  the `Accept` header (HTTP content negotiation), and writes the cached bytes straight to
-  the response. Gzip isn't handled here at all — it's Reactor Netty's own compression
-  support (`server.compression`, see [Performance](#performance)) that negotiates
-  `Accept-Encoding` and compresses the outgoing bytes, per request, before they hit the
-  wire.
+- **`ProtoDataService`** — maps the repository's `Mono<Root>` to the serialized protobuf
+  bytes (`Mono<byte[]>`), itself cached.
+- **`JsonDataService`** — maps the repository's `Mono<Root>` to its JSON representation
+  (`Mono<String>`), itself cached.
+- **`DataController`** — exposes both services on a single URL as reactive endpoints
+  (`Mono<byte[]>` / `Mono<String>`), differentiated purely by the `Accept` header (HTTP
+  content negotiation). It doesn't handle compression itself — that's Reactor Netty's own
+  compression support (`server.compression`, see [Performance](#performance)), which
+  negotiates `Accept-Encoding` and compresses the outgoing bytes per request, transparently
+  to the controller.
 
 ## Data shape
 
