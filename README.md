@@ -18,9 +18,7 @@ so the file is only read and the protobuf message only built once — on the fir
 subscription from either endpoint — and every subsequent request (and every concurrent
 in-flight request) replays that cached signal instead of recomputing it.
 
-That caching stops at the built dataset, deliberately. There is no HTTP-level caching —
-every response is `Cache-Control: no-store` and there's no `ETag`/conditional-GET support,
-so every request is always answered live, and gzip compression (see
+That caching stops at the built dataset, deliberately. Gzip compression (see
 [Performance](#performance)) is applied fresh per request by the server itself rather than
 precomputed, so a network trace shows real work happening on every call.
 
@@ -39,10 +37,10 @@ precomputed, so a network trace shows real work happening on every call.
   same way. Nothing downstream of this is cached.
 - **`DataController`** — exposes both services on a single URL, differentiated purely by
   the `Accept` header (HTTP content negotiation), and writes the cached bytes straight to
-  the response with `Cache-Control: no-store`. Gzip isn't handled here at all — it's
-  Reactor Netty's own compression support (`server.compression`, see
-  [Performance](#performance)) that negotiates `Accept-Encoding` and compresses the
-  outgoing bytes, per request, before they hit the wire.
+  the response. Gzip isn't handled here at all — it's Reactor Netty's own compression
+  support (`server.compression`, see [Performance](#performance)) that negotiates
+  `Accept-Encoding` and compresses the outgoing bytes, per request, before they hit the
+  wire.
 
 ## Data shape
 
@@ -66,24 +64,19 @@ There is a single endpoint. The representation is chosen purely by the `Accept` 
 | GET    | `/api/data` | `application/x-protobuf` | Raw protobuf binary — serialized bytes of the `Root` message. Decode with `Root.parseFrom(bytes)`. |
 | GET    | `/api/data` | `application/json`       | The same dataset as JSON, using protobuf's standard JSON mapping (via `JsonFormat`). |
 
-No authentication, no request parameters. See [Performance](#performance) for the
-response headers (`Content-Encoding`, `Cache-Control`) both variants set.
+No authentication, no request parameters. See [Performance](#performance) for how
+`Content-Encoding` is negotiated.
 
 ## Performance
 
-By design, no network-level caching: every request is answered live, always hitting the
-service. The only thing computed once is the underlying dataset build (see
+The only thing computed once is the underlying dataset build (see
 [Architecture](#architecture)) — reading the 20&nbsp;MB `dataset.bin` and building the
 `Root` message is far more expensive than anything below, so that alone stays cached.
 
-- **`Cache-Control: no-store`** on every response — no client, proxy, or CDN is allowed to
-  cache it, so there's no conditional-GET/ETag machinery either. Every call is a full
-  request/response.
-- **Gzip, via `server.compression`** (`application.yml`) — Reactor Netty's built-in
-  response compression, not application code. It negotiates `Accept-Encoding` and
-  compresses eligible responses (`application/json`, `application/x-protobuf`, above
-  `min-response-size`) fresh on every request; nothing about the compressed bytes is
-  cached or reused across requests.
+Compression is handled by **`server.compression`** (`application.yml`) — Reactor Netty's
+built-in response compression, not application code. It negotiates `Accept-Encoding` and
+compresses eligible responses (`application/json`, `application/x-protobuf`, above
+`min-response-size`) fresh on every request.
 
 ## Dependency on `test-data-protos`
 

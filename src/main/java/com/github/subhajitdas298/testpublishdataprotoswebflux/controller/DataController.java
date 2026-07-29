@@ -2,7 +2,6 @@ package com.github.subhajitdas298.testpublishdataprotoswebflux.controller;
 
 import com.github.subhajitdas298.testpublishdataprotoswebflux.service.JsonDataService;
 import com.github.subhajitdas298.testpublishdataprotoswebflux.service.ProtoDataService;
-import org.springframework.http.CacheControl;
 import org.springframework.http.MediaType;
 import org.springframework.http.server.reactive.ServerHttpResponse;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -31,11 +30,10 @@ public class DataController {
         return respond(exchange, MediaType.APPLICATION_JSON, jsonDataService.getData());
     }
 
-    // Gzip (per server.compression) is applied by the server itself; no-store means no HTTP caching.
+    // Gzip is applied by the server itself, per server.compression in application.yml.
     private Mono<Void> respond(ServerWebExchange exchange, MediaType contentType, Mono<byte[]> data) {
         ServerHttpResponse response = exchange.getResponse();
         response.getHeaders().setContentType(contentType);
-        response.getHeaders().setCacheControl(CacheControl.noStore());
 
         return data.flatMap(bytes -> {
             response.getHeaders().setContentLength(bytes.length);
