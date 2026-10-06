@@ -1,7 +1,7 @@
 # test-publish-data-protos-webflux
 
 A minimal Spring Boot (v4) **WebFlux** application, built with Java 24 and Gradle, that
-serves precomputed test data using the protobuf message types from
+serves generated test data using the protobuf message types from
 [`test-data-protos`](https://github.com/Subhajitdas298/test-data-protos) and publishes it
 over a fully open (unauthenticated) reactive REST API — as raw protobuf binary or as JSON.
 
@@ -11,10 +11,10 @@ same data, same API shape, same architecture — rebuilt end-to-end on Spring We
 Project Reactor instead of Spring MVC, with a fully non-blocking request path from the
 controller down to the file read.
 
-There is no database — the repository layer builds the dataset from a precomputed binary
-array bundled as a resource (`src/main/resources/data/dataset.bin`), and every layer
+There is no database and no bundled data file — the repository layer generates the dataset
+from a fixed seed, and every layer
 (repository + both services) publishes a `Mono` built with Reactor's `.cache()` operator,
-so the file is only read and the protobuf message only built once — on the first
+so the protobuf message is only built once — on the first
 subscription from either endpoint — and every subsequent request (and every concurrent
 in-flight request) replays that cached signal instead of recomputing it.
 
@@ -24,13 +24,12 @@ precomputed, so a network trace shows real work happening on every call.
 
 ## Architecture
 
-- **`DataRepository`** (repository layer) — reads `data/dataset.bin` (3,000,000
-  precomputed `double`s, stored as big-endian 8-byte values) into a `DoubleBuffer` and
-  builds the raw `Root` protobuf message from it. The blocking file read and message
-  construction is wrapped in `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())`
+- **`DataRepository`** (repository layer) — generates the 10,000,000 `double`s
+  of field `a` from a fixed seed and builds the raw `Root` protobuf message from them. The
+  blocking message construction is wrapped in `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())`
   so it never runs on a Netty event-loop thread, and the resulting `Mono<Root>` is built
   with `.cache()` so it is only ever computed once — this is the one thing kept cached,
-  since re-reading the file and rebuilding 3,000,000 values on every request would dwarf
+  since regenerating 10,000,000 values on every request would dwarf
   any per-request cost.
 - **`ProtoDataService`** — maps the repository's `Mono<Root>` to the serialized protobuf
   bytes (`Mono<byte[]>`), itself cached.
@@ -50,11 +49,11 @@ precomputed, so a network trace shows real work happening on every call.
 The dataset (a `Root` protobuf message) consists of:
 
 - **1 day** of data (`DataEntry.dates`, one `DateRecord` per day)
-- Only fields **`a`, `b` and `c`** are populated (the proto defines `a`–`z`; the rest are left empty)
-- Each populated field contains **1,000,000 precomputed `double` records**, read in order from
-  `data/dataset.bin`
+- Only field **`a`** is populated (the proto defines `a`–`z`; the rest are left empty)
+- Field `a` contains **10,000,000 `double` records**, generated from a fixed seed
+  (`SplittableRandom(0)`, uniform in `[0, 1000)`) so every start serves the same values
 
-That's `1 * 3 * 1,000,000 = 3,000,000` values, read from the bundled file once and reused
+That's `1 * 1 * 10,000,000 = 10,000,000` values (~80 MB of protobuf), generated once and reused
 for every request.
 
 ## API
@@ -73,7 +72,7 @@ No authentication, no request parameters. See [Performance](#performance) for ho
 ## Performance
 
 The only thing computed once is the underlying dataset build (see
-[Architecture](#architecture)) — reading the 20&nbsp;MB `dataset.bin` and building the
+[Architecture](#architecture)) — generating 10,000,000 values and building the
 `Root` message is far more expensive than anything below, so that alone stays cached.
 
 Compression is handled by **`server.compression`** (`application.yml`) — Reactor Netty's
