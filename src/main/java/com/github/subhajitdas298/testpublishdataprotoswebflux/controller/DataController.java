@@ -26,7 +26,7 @@ public class DataController {
     }
 
     @GetMapping(value = "/api/data", produces = MediaType.APPLICATION_JSON_VALUE)
-    public Mono<String> getJsonData() {
+    public Mono<byte[]> getJsonData() {
         return jsonDataService.getData();
     }
 }

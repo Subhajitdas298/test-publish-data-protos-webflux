@@ -35,9 +35,11 @@ precomputed, so a network trace shows real work happening on every call.
 - **`ProtoDataService`** — maps the repository's `Mono<Root>` to the serialized protobuf
   bytes (`Mono<byte[]>`), itself cached.
 - **`JsonDataService`** — maps the repository's `Mono<Root>` to its JSON representation
-  (`Mono<String>`), itself cached.
+  (UTF-8 `Mono<byte[]>`), itself cached — bytes rather than a `String`, because Netty needs a
+  worst-case-sized direct buffer to encode a very large `String` response and would run out of
+  direct memory at ~57 MB.
 - **`DataController`** — exposes both services on a single URL as reactive endpoints
-  (`Mono<byte[]>` / `Mono<String>`), differentiated purely by the `Accept` header (HTTP
+  (`Mono<byte[]>` for both), differentiated purely by the `Accept` header (HTTP
   content negotiation). It doesn't handle compression itself — that's Reactor Netty's own
   compression support (`server.compression`, see [Performance](#performance)), which
   negotiates `Accept-Encoding` and compresses the outgoing bytes per request, transparently
