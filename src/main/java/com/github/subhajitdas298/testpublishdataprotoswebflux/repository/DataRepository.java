@@ -17,8 +17,8 @@ import java.nio.DoubleBuffer;
 public class DataRepository {
 
     private static final int DAYS = 1;
-    private static final int RECORDS_PER_FIELD_PER_DAY = 100_000;
-    private static final String FIELDS = "abcdefghijklmnopqrstuvwxyz";
+    private static final int RECORDS_PER_FIELD_PER_DAY = 1_000_000;
+    private static final String FIELDS = "abc";
     private static final String DATASET_RESOURCE = "data/dataset.bin";
 
     // The dataset is read from disk and built into a Root message only once: this Mono is
