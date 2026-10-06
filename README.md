@@ -47,12 +47,12 @@ precomputed, so a network trace shows real work happening on every call.
 
 The dataset (a `Root` protobuf message) consists of:
 
-- **10 days** of data (`DataEntry.dates`, one `DateRecord` per day)
+- **1 day** of data (`DataEntry.dates`, one `DateRecord` per day)
 - Each day has **26 fields** (`a`–`z`, matching the proto definition)
-- Each field contains **10,000 precomputed `double` records**, read in order from
+- Each field contains **100,000 precomputed `double` records**, read in order from
   `data/dataset.bin`
 
-That's `10 * 26 * 10,000 = 2,600,000` values, read from the bundled file once and reused
+That's `1 * 26 * 100,000 = 2,600,000` values, read from the bundled file once and reused
 for every request.
 
 ## API
