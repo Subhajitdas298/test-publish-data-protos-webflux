@@ -31,9 +31,9 @@ public class JsonDataService {
                 .cache());
     }
 
-    private static String toJson(Root root) {
+    private static String toJson(byte[] proto) {
         try {
-            return JsonFormat.printer().print(root);
+            return JsonFormat.printer().print(Root.parseFrom(proto));
         } catch (InvalidProtocolBufferException e) {
             throw new UncheckedIOException(e);
         }

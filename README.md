@@ -11,10 +11,9 @@ same data, same API shape, same architecture — rebuilt end-to-end on Spring We
 Project Reactor instead of Spring MVC, with a fully non-blocking request path from the
 controller down to the file read.
 
-There is no database and no bundled data file — the repository layer generates the dataset
-from a fixed seed, and every layer
-(repository + both services) publishes a `Mono` built with Reactor's `.cache()` operator,
-so the protobuf message is only built once — on the first
+There is no database. The datasets are precomputed protobuf binaries bundled as resources
+(`src/main/resources/data/dataset-<size>.bin`, one per sample size). Every layer publishes a
+`Mono` built with Reactor's `.cache()` operator, so each file is only read once — on the first
 subscription from either endpoint — and every subsequent request (and every concurrent
 in-flight request) replays that cached signal instead of recomputing it.
 
@@ -24,17 +23,14 @@ precomputed, so a network trace shows real work happening on every call.
 
 ## Architecture
 
-- **`DataRepository`** (repository layer) — generates the 10,000,000 `double`s
-  of field `a` from a fixed seed and builds the raw `Root` protobuf message from them. The
-  blocking message construction is wrapped in `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())`
-  so it never runs on a Netty event-loop thread, and the resulting `Mono<Root>` is built
-  with `.cache()` so it is only ever computed once — this is the one thing kept cached,
-  since regenerating 10,000,000 values on every request would dwarf
-  any per-request cost.
-- **`ProtoDataService`** — maps the repository's `Mono<Root>` to the serialized protobuf
-  bytes (`Mono<byte[]>`), itself cached.
-- **`JsonDataService`** — maps the repository's `Mono<Root>` to its JSON representation
-  (UTF-8 `Mono<byte[]>`), itself cached — bytes rather than a `String`, because Netty needs a
+- **`DataRepository`** (repository layer) — loads the bundled `dataset-<size>.bin` for the
+  requested size. The blocking read is wrapped in `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())`
+  so it never runs on a Netty event-loop thread, and each `Mono<byte[]>` is built with
+  `.cache()` so a file is only read once. Each file is a serialized `Root` message, i.e. the
+  wire format itself.
+- **`ProtoDataService`** — serves those bytes as they are.
+- **`JsonDataService`** — parses the bytes into a `Root` and maps it to its JSON representation
+  (UTF-8 `Mono<byte[]>`), cached per size — bytes rather than a `String`, because Netty needs a
   worst-case-sized direct buffer to encode a very large `String` response and would run out of
   direct memory at ~57 MB.
 - **`DataController`** — exposes both services on a single URL as reactive endpoints
@@ -50,11 +46,9 @@ The dataset (a `Root` protobuf message) consists of:
 
 - **1 day** of data (`DataEntry.dates`, one `DateRecord` per day)
 - Only field **`a`** is populated (the proto defines `a`–`z`; the rest are left empty)
-- Field `a` contains **10,000,000 `double` records**, generated from a fixed seed
-  (`SplittableRandom(0)`, uniform in `[0, 1000)`) so every start serves the same values
-
-That's `1 * 1 * 10,000,000 = 10,000,000` values (~80 MB of protobuf), generated once and reused
-for every request.
+- Field `a` contains the first **N `double` records** of one fixed sequence
+  (`SplittableRandom(0)`, uniform in `[0, 1000)`), with N one of 10,000 / 100,000 /
+  1,000,000 / 10,000,000 (~80 KB / 800 KB / 8 MB / 80 MB of protobuf) — one bundled file each
 
 ## API
 
@@ -66,14 +60,13 @@ There is a single endpoint. The representation is chosen purely by the `Accept` 
 | GET    | `/api/data` | `application/x-protobuf` | Raw protobuf binary — serialized bytes of the `Root` message. Decode with `Root.parseFrom(bytes)`. |
 | GET    | `/api/data` | `application/json`       | The same dataset as JSON, using protobuf's standard JSON mapping (via `JsonFormat`). |
 
-No authentication, no request parameters. See [Performance](#performance) for how
+No authentication. Optional query parameter `size` (10000, 100000, 1000000 or 10000000;
+default 10000000) picks which precomputed sample is served; other values get `400`. See [Performance](#performance) for how
 `Content-Encoding` is negotiated.
 
 ## Performance
 
-The only thing computed once is the underlying dataset build (see
-[Architecture](#architecture)) — generating 10,000,000 values and building the
-`Root` message is far more expensive than anything below, so that alone stays cached.
+The only thing cached is the loaded dataset bytes (see [Architecture](#architecture)).
 
 Compression is handled by **`server.compression`** (`application.yml`) — Reactor Netty's
 built-in response compression, not application code. It negotiates `Accept-Encoding` and
