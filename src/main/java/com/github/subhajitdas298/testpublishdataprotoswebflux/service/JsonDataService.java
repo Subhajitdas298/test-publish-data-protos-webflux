@@ -9,23 +9,26 @@ import reactor.core.publisher.Mono;
 
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class JsonDataService {
 
     // Cached as bytes rather than a String: encoding a ~57 MB String makes Netty reserve a
     // worst-case-sized direct buffer, which exceeds the container's direct-memory limit.
-    private final Mono<byte[]> jsonDataset;
+    private final DataRepository dataRepository;
+    private final Map<Integer, Mono<byte[]>> datasets = new ConcurrentHashMap<>();
 
     public JsonDataService(DataRepository dataRepository) {
-        this.jsonDataset = dataRepository.findData()
-                .map(JsonDataService::toJson)
-                .map(json -> json.getBytes(StandardCharsets.UTF_8))
-                .cache();
+        this.dataRepository = dataRepository;
     }
 
-    public Mono<byte[]> getData() {
-        return jsonDataset;
+    public Mono<byte[]> getData(int size) {
+        return datasets.computeIfAbsent(size, s -> dataRepository.findData(s)
+                .map(JsonDataService::toJson)
+                .map(json -> json.getBytes(StandardCharsets.UTF_8))
+                .cache());
     }
 
     private static String toJson(Root root) {
