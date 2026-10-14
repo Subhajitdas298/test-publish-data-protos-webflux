@@ -68,6 +68,21 @@ No authentication. Optional query parameter `size` (10000, 100000, 1000000 or 10
 default 10000000) picks which precomputed sample is served; other values get `400`. See [Performance](#performance) for how
 `Content-Encoding` is negotiated.
 
+### Score distribution
+
+`GET /api/buckets` (JSON only) returns a synthetic fraud-model score distribution over
+scores 0–1000 as two count arrays:
+
+```json
+{ "a": [ /* 10 counts: bucket i = scores 100*i .. 100*i+99 */ ],
+  "b": [ /* 100 counts: bucket j = scores 10*j .. 10*j+9 */ ] }
+```
+
+Each `a` value is the sum of its ten `b` values (about 1,000,000 transactions in total): most
+transactions score low, and a small fraud population clusters around 800. Seeded, so every
+start serves the same counts. It's a separate endpoint because the shared `test-data-protos`
+schema has no message for it.
+
 ## Performance
 
 The only thing cached is the loaded dataset bytes (see [Architecture](#architecture)).

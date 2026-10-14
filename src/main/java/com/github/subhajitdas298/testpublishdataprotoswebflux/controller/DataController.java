@@ -1,6 +1,8 @@
 package com.github.subhajitdas298.testpublishdataprotoswebflux.controller;
 
 import com.github.subhajitdas298.testpublishdataprotoswebflux.repository.DataRepository;
+import com.github.subhajitdas298.testpublishdataprotoswebflux.repository.Buckets;
+import com.github.subhajitdas298.testpublishdataprotoswebflux.service.BucketService;
 import com.github.subhajitdas298.testpublishdataprotoswebflux.service.JsonDataService;
 import com.github.subhajitdas298.testpublishdataprotoswebflux.service.ProtoDataService;
 import org.springframework.http.HttpStatus;
@@ -22,10 +24,13 @@ public class DataController {
 
     private final ProtoDataService protoDataService;
     private final JsonDataService jsonDataService;
+    private final BucketService bucketService;
 
-    public DataController(ProtoDataService protoDataService, JsonDataService jsonDataService) {
+    public DataController(ProtoDataService protoDataService, JsonDataService jsonDataService,
+                          BucketService bucketService) {
         this.protoDataService = protoDataService;
         this.jsonDataService = jsonDataService;
+        this.bucketService = bucketService;
     }
 
     @GetMapping(value = "/api/data", produces = "application/x-protobuf")
@@ -36,6 +41,12 @@ public class DataController {
     @GetMapping(value = "/api/data", produces = MediaType.APPLICATION_JSON_VALUE)
     public Mono<ResponseEntity<byte[]>> getJsonData(@RequestParam(defaultValue = "10000000") int size) {
         return jsonDataService.getData(validSize(size)).map(DataController::withLength);
+    }
+
+    /** Score distribution: {"a": [10 counts], "b": [100 counts]}, see {@link Buckets}. */
+    @GetMapping(value = "/api/buckets", produces = MediaType.APPLICATION_JSON_VALUE)
+    public Mono<Buckets> getBuckets() {
+        return bucketService.getBuckets();
     }
 
     private static int validSize(int size) {
